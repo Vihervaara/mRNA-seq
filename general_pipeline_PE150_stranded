@@ -1,8 +1,17 @@
+#!/bin/sh
+
 
 ${genome}="chm13v2.0"
 ### Genome files for chm13v2 can be downloaded here:
 ### https://genomeinformatics.github.io/CHM13v2/ 
 
+
+
+###############################################
+# Change the working directory to match yours #
+###############################################
+
+# cd /myWorkingDirectory/ 
 
 ###############################################
 ###        Build the reference genome       ###
@@ -22,11 +31,6 @@ List="condition_1 condition_2"
 
 repList="r1_ r2_ r3_"
 
-###############################################
-# Change the working directory to match yours #
-###############################################
-
-# cd /myWorkingDirectory/ 
 
 
 

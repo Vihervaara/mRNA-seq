@@ -1,0 +1,260 @@
+
+${genome}="chm13v2.0"
+### Genome files for chm13v2 can be downloaded here:
+### https://genomeinformatics.github.io/CHM13v2/ 
+
+
+###############################################
+###        Build the reference genome       ###
+###############################################
+
+    hisat2-build ${genome} ${genome}_hiSat2
+
+###############################################
+###     List the conditions or samples      ###
+###############################################
+
+List="condition_1 condition_2"
+
+###############################################
+###             List replicates             ###
+###############################################
+
+repList="r1_ r2_ r3_"
+
+###############################################
+# Change the working directory to match yours #
+###############################################
+
+# cd /myWorkingDirectory/ 
+
+
+
+###############################################
+### Loop through the samples and replicates ###
+###############################################
+
+### assumes PE data, hence _R1 and _R2
+
+### assumes sample names as:
+  # ${replicate}_{condition}_R1.fq.fz
+  # ${replicate}_{condition}_R2.fq.fz
+
+
+for y in ${repList}
+do
+
+for x in ${List}
+do
+
+
+### check the quality metrics:
+
+    fastqc ${y}_${x}_R1.fq.gz
+    fastqc ${y}_${x}_R2.fq.gz
+
+done
+done
+
+
+###############################################
+### Loop through the samples and replicates ###
+###            Generates                    ###
+###    .bam .bedgraph and .bigWig files     ###
+###############################################
+
+
+for y in ${repList}
+do
+
+for x in ${List}
+do
+
+gunzip ${y}_${x}_R1.fq.gz
+gunzip ${y}_${x}_R2.fq.gz
+
+### Here, the first 10 bases as well as the end of the read is trimmed away. 70 nt of read 1 and read 2 kept.
+### Change the parameters according to the quality metrics. (In our PE 150+150 samples, the first nts and the ends of reads had lower qcs).  
+
+fastx_trimmer -f 10 -l 80 -i ${y}_${x}_R1.fq -o ${y}_${x}_R1_trimmed.fastq
+fastx_trimmer -f 10 -l 80 -i ${y}_${x}_R2.fq -o ${y}_${x}_R2_trimmed.fastq
+
+
+hisat2 -k 10 --rna-strandness FR --no-mixed --no-discordant --summary-file ${y}${x}_hisat2_alignmentSummary.txt -x ${genome}_hiSat2 -1 ${y}_${x}_R1_trimmed.fastq -2 ${y}_${x}_R2_trimmed.fastq | samtools view -S -b '-' > ${y}_${x}.bam
+
+samtools sort ${y}_${x}.bam -o ${y}${x}_allMap.bam
+samtools index ${y}_${x}_allMap.bam
+rm ${y}_${x}.bam
+
+
+samtools view -bh -q 30 -f 3 -F 2316 ${y}_${x}_allMap.bam > ${y}_${x}_uniqMap.bam
+ ##https://www.biostars.org/p/276216/
+  #keeps (-f) mapped and properly paired reads that are not multimappers (MAPQ=0),
+  #discards (-F) non-primary alignment, unmapped reads and mates.
+
+
+#### These are unnormalized files
+bedtools genomecov -split -ibam ${y}_${x}_uniqMap.bam -bg > ${y}_${x}_uniqMap.bedgraph
+
+    echo ${y}_${x}
+    uC=$(samtools view -c ${y}_${x}_uniqMap.bam)
+    #echo ${uC}
+    c=`echo $uC / 2 | bc -l`
+    echo ${c}
+    
+    echo $c | awk '{ c="'$c'"; printf "%s\t%s\t%s\t%s\n", $1, $2, $3, ($4*1000000)/c}' ${y}_${x}.bedgraph > ${y}_${x}_FPM.bedgraph
+
+    bedgraphtobigwig ${y}_${x}_FPM.bedGraph chromaSizes_${genome}.txt ${y}_${x}_FPM.bigWig
+    
+
+### We have used a kit that reports mRNAs strand-spefically. Here, we take an advantange of that and get the strand the mRNA derives from.
+### Make sure you have the .sh code in your working directory
+
+    sh mRNAseq_splitStrands.sh ${y}_${x}_uniqMap.bam
+    ## script by Istvan Albert: https://www.biostars.org/p/92935/
+
+    mv fwd.bam ${y}_${x}_uniqMap_pl.bam
+    mv fwd.bam.bai ${y}_${x}_uniqMap_pl.bam.bai
+
+    mv rev.bam ${y}_${x}_uniqMap_mn.bam
+    mv rev.bam.bai ${y}_${x}_uniqMap_mn.bam.bai
+    
+    rm fwd1*
+    rm fwd2*
+    rm rev1*
+    rm rev2*
+
+    bedtools genomecov -split -ibam ${y}_${x}_uniqMap_pl.bam -bg > ${y}_${x}_uniqMap_pl.bedgraph
+    bedtools genomecov -split -ibam ${y}_${x}_uniqMap_mn.bam -bg > ${y}_${x}_uniqMap_mn.bedgraph
+    
+    echo $c | awk '{ c="'$c'"; printf "%s\t%s\t%s\t%s\n", $1, $2, $3, ($4*1000000)/c}' ${y}_${x}_uniqMap_pl.bedgraph  > ${y}_${x}_uniqMap_FPM_pl.bedgraph
+    
+    echo $c | awk '{ c="'$c'"; printf "%s\t%s\t%s\t%s\n", $1, $2, $3, ($4*1000000)/c}' ${y}_${x}_uniqMap_mn.bedgraph  > ${y}_${x}_uniqMap_FPM_mn.bedgraph
+
+    awk '{$4=$4*-1; print}' ${y}_${x}_uniqMap_FPM_mn.bedgraph > ${y}_${x}_uniqMap_FPM_mn_.bedgraph
+    mv ${y}_${x}_uniqMap_FPM_mn_.bedgraph ${y}_${x}_uniqMap_FPM_mn.bedgraph
+    rm *_mn_.bedgraph
+
+
+    bedgraphtobigwig ${y}_${x}_uniqMap_FPM_pl.bedgraph chromSizes_${genome}.txt ${y}_${x}_uniqMap_FPM_pl.bigWig
+    bedgraphtobigwig ${y}_${x}_uniqMap_FPM_mn.bedgraph chromSizes_${genome}.txt ${y}_${x}_uniqMap_FPM_mn.bigWig
+
+
+    sh mRNAseq_splitStrands.sh ${y}_${x}_allMap.bam
+
+    mv fwd.bam ${y}_${x}_allMap_pl.bam
+    mv fwd.bam.bai ${y}_${x}_allMap_pl.bam.bai
+
+    mv rev.bam ${y}_${x}_allMap_mn.bam
+    mv rev.bam.bai ${y}_${x}_allMap_mn.bam.bai
+    
+    rm fwd1*
+    rm fwd2*
+    rm rev1*
+    rm rev2*
+
+    bedtools genomecov -split -ibam ${y}_${x}_allMap_pl.bam -bg > ${y}_${x}_allMap_pl.bedgraph
+    bedtools genomecov -split -ibam ${y}_${x}_allMap_mn.bam -bg > ${y}_${x}_allMap_mn.bedgraph
+    
+    echo $c | awk '{ c="'$c'"; printf "%s\t%s\t%s\t%s\n", $1, $2, $3, ($4*1000000)/c}' ${y}_${x}_allMap_pl.bedgraph  > ${y}_${x}_allMap_FPM_pl.bedgraph
+    
+    echo $c | awk '{ c="'$c'"; printf "%s\t%s\t%s\t%s\n", $1, $2, $3, ($4*1000000)/c}' ${y}_${x}_allMap_mn.bedgraph  > ${y}_${x}_allMap_FPM_mn.bedgraph
+ 
+ 
+    awk '{$4=$4*-1; print}' ${y}_${x}_allMap_FPM_mn.bedgraph > ${y}_${x}_allMap_FPM_mn_.bedgraph
+    mv ${y}_${x}_allMap_FPM_mn_.bedgraph ${y}_${x}_allMap_FPM_mn.bedgraph
+    rm *_mn_.bedgraph
+ 
+   bedgraphtobigwig ${y}_${x}_allMap_FPM_pl.bedgraph chromSizes_${genome}.txt ${y}_${x}_allMap_FPM_pl.bigWig
+   bedgraphtobigwig ${y}_${x}_allMap_FPM_mn.bedgraph chromSizes_${genome}.txt ${y}_${x}_allMap_FPM_mn.bigWig
+
+done
+done
+
+
+
+###################################################
+###       Loop through the conditions           ###
+###              Generates:                     ###
+###  Count data to use in repl-correlation      ###
+#    and differential gene expression analyses    #
+##  Replicate-merged .bam .bdg and .bigWig files ##
+###################################################
+
+
+for x in ${List}
+
+do
+
+##################################################################################################################################################################
+#################################     COUNT MATRIX TO USE IN CORRELATION ANALYSES & DIFFERENTIAL GENE EXPRESSION ANALYSES     #####################################
+                                                                                                                                                      
+featureCounts -p -B -s 2 -g gene_id -a ${genome}.gtf -o ${x}_BRs_mRNA_featureCounts.txt rep1_${x}_uniqMap.bam rep2_${x}_uniqMap.bam rep3_${x}_uniqMap.bam
+#  -s 0 (unstranded), 1 (stranded) and 2 (reversely stranded).
+##################################################################################################################################################################
+
+
+##################################################################################################################################################################
+###################################                  REPLICATE_MERGED .bam .bedgraph and .bigWig files                 ############################################
+
+    samTools merge ${x}_BRs_temp_pl.bam rep1_${x}_uniqMap_pl.bam rep2_${x}_uniqMap_pl.bam rep3_${x}_uniqMap_pl.bam
+    samTools merge ${x}_BRs_temp_mn.bam rep1_${x}_uniqMap_mn.bam rep2_${x}_uniqMap_mn.bam rep3_${x}_uniqMap_mn.bam
+
+    samTools sort ${x}_BRs_temp_pl.bam -o ${x}_BRs_uniqMap_pl.bam
+    samTools index ${x}_BRs_uniqMap_pl.bam
+
+    samTools sort ${x}_BRs_temp_mn.bam -o ${x}_BRs_uniqMap_mn.bam
+    samTools index ${x}_BRs_uniqMap_mn.bam
+
+    rm *temp.bam
+ 
+    samTools merge ${x}_BRs_aMtemp_pl.bam rep1_${x}_allMap_pl.bam rep2_${x}_allMap_pl.bam rep3_${x}_allMap_pl.bam
+    samTools merge ${x}_BRs_aMtemp_mn.bam rep1_${x}_allMap_mn.bam rep2_${x}_allMap_mn.bam rep3_${x}_allMap_mn.bam
+
+    samTools sort ${x}_BRs_aMtemp_pl.bam -o ${x}_BRs_allMap_pl.bam
+    samTools index ${x}_BRs_allMap_pl.bam
+   
+    samTools sort ${x}_BRs_aMtemp_mn.bam -o ${x}_BRs_allMap_mn.bam
+    samTools index ${x}_BRs_allMap_mn.bam
+    
+    rm *temp.bam
+
+
+    bedtools genomecov -split -ibam ${x}_BRs_allMap_pl.bam -bg > ${x}_BRs_allMap_pl.bedgraph
+    bedtools genomecov -split -ibam ${x}_BRs_allMap_mn.bam -bg > ${x}_BRs_allMap_mn.bedgraph
+
+    bedtools genomecov -split -ibam ${x}_BRs_uniqMap_pl.bam -bg > ${x}_BRs_uniqMap_pl.bedgraph
+    bedtools genomecov -split -ibam ${x}_BRs_uniqMap_mn.bam -bg > ${x}_BRs_uniqMap_mn.bedgraph
+
+
+    echo ${x}
+    repsC_pl=$(samtools view -c ${x}_BRs_uniqMap_pl.bam)
+    #echo ${uC_pl}
+    repsC_mn=$(samtools view -c ${x}_BRs_uniqMap_mn.bam)
+
+    c=`echo ($repsC_pl + $repsC_mn) / 2 | bc -l`
+    echo ${c}
+
+
+    echo $c | awk '{ c="'$c'"; printf "%s\t%s\t%s\t%s\n", $1, $2, $3, ($4*1000000)/c}' ${x}_BRs_uniqMap_pl.bedgraph  > ${x}_BRs_uniqMap_FPM_pl.bedgraph
+    echo $c | awk '{ c="'$c'"; printf "%s\t%s\t%s\t%s\n", $1, $2, $3, ($4*1000000)/c}' ${x}_BRs_uniqMap_mn.bedgraph  > ${x}_BRs_uniqMap_FPM_m.bedgraph
+
+    #echo $c | awk '{ c="'$c'"; printf "%s\t%s\t%s\t%s\n", $1, $2, $3, ($4*1000000)/c}' ${x}_BRs_allMap_pl.bedgraph  > ${x}_BRs_allMap_FPM_pl.bedgraph
+    #echo $c | awk '{ c="'$c'"; printf "%s\t%s\t%s\t%s\n", $1, $2, $3, ($4*1000000)/c}' ${x}_BRs_allMap_mn.bedgraph  > ${x}_BRs_allMap_FPM_m.bedgraph
+
+
+
+    awk '{$4=$4*-1; print}' ${x}_BRs_uniqMap_FPM_m.bedgraph > ${x}_BRs_uniqMap_FPM_mn.bedgraph
+    #awk '{$4=$4*-1; print}' ${x}_BRs_allMap_FPM_m.bedgraph > ${x}_BRs_allMap_FPM_mn.bedgraph
+    rm *_m.bedgraph
+
+
+    bedgraphtobigwig ${x}_BRs_uniqMap_FPM_pl.bedgraph chromSizes_${genome}.txt ${x}_BRs_uniqMap_FPM_pl.bigWig
+    bedgraphtobigwig ${x}_BRs_uniqMap_FPM_mn.bedgraph chromSizes_${genome}.txt ${x}_BRs_uniqMap_FPM_mn.bigWig
+##################################################################################################################################################################
+
+
+
+done
+
+
